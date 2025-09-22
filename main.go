@@ -55,11 +55,68 @@ func main() {
 	generateAndInsertOpportunityPartners(db, opportunities, businessPartners)
 	log.Println("Done.")
 
+	// log.Println("Fetching existing Business Partners...")
+	// businessPartners := fetchBusinessPartners(db)
+	// log.Printf("Found %d Business Partners", len(businessPartners))
+
+	// log.Println("Fetching existing Opportunities...")
+	// opportunities := fetchOpportunities(db)
+	// log.Printf("Found %d Opportunities", len(opportunities))
+
 	log.Println("Generating and inserting Cases...")
 	generateAndInsertCases(db, numCases, businessPartners, opportunities)
 	log.Println("Done. Total Cases:", numCases)
 
 	log.Println("Database population complete.")
+}
+
+func fetchOpportunities(db *sql.DB) []uuid.UUID {
+	rows, err := db.Query(fmt.Sprintf("SELECT cast(OpportunityGUID as char(36)) FROM %s.tbl_Opportunities", dbSchema))
+	if err != nil {
+		log.Fatal("Error querying opportunities:", err)
+	}
+	defer rows.Close()
+
+	var opportunities []uuid.UUID
+	for rows.Next() {
+		var guid uuid.UUID
+		err := rows.Scan(&guid)
+		if err != nil {
+			log.Fatal("Error scanning opportunity GUID:", err)
+		}
+		opportunities = append(opportunities, guid)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Fatal("Error iterating opportunity rows:", err)
+	}
+
+	return opportunities
+}
+
+func fetchBusinessPartners(db *sql.DB) []uuid.UUID {
+	rows, err := db.Query(fmt.Sprintf("SELECT cast(PartnerGUID as char(36)) FROM %s.tbl_BusinessPartners ORDER BY PartnerGUID ASC", dbSchema))
+	if err != nil {
+		log.Fatal("Error querying business partners:", err)
+	}
+	defer rows.Close()
+
+	var businessPartners []uuid.UUID
+	for rows.Next() {
+		var guid uuid.UUID
+		// Scan directly into uuid.UUID - the driver should handle the conversion
+		err := rows.Scan(&guid)
+		if err != nil {
+			log.Fatal("Error scanning business partner GUID:", err)
+		}
+		businessPartners = append(businessPartners, guid)
+	}
+
+	if err = rows.Err(); err != nil {
+		log.Fatal("Error iterating business partner rows:", err)
+	}
+
+	return businessPartners
 }
 
 func generateAndInsertBusinessPartners(db *sql.DB, num int) []uuid.UUID {
@@ -69,7 +126,7 @@ func generateAndInsertBusinessPartners(db *sql.DB, num int) []uuid.UUID {
 	}
 	defer tx.Rollback() // Rollback if not committed
 
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_BusinessPartners (PartnerGUID, FirstName, LastName, Email, PhoneNumber) VALUES (?, ?, ?, ?, ?)", dbSchema))
+	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_BusinessPartners (PartnerGUID, FirstName, LastName, Email, PhoneNumber) VALUES (@p1, @p2, @p3, @p4, @p5)", dbSchema))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,7 +161,7 @@ func generateAndInsertOpportunities(db *sql.DB, num int, partners []uuid.UUID) [
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_Opportunities (OpportunityGUID, ProcessType, Status, RequestedAmount, CreatedDate, ClosingDate) VALUES (?, ?, ?, ?, ?, ?)", dbSchema))
+	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_Opportunities (OpportunityGUID, ProcessType, Status, RequestedAmount, CreatedDate, ClosingDate) VALUES (@p1, @p2, @p3, @p4, @p5, @p6)", dbSchema))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -140,7 +197,7 @@ func generateAndInsertOpportunityPartners(db *sql.DB, opportunities, partners []
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_OpportunityPartners (OpportunityGUID, PartnerGUID, PartnerFunction, IsPrimary) VALUES (?, ?, ?, ?)", dbSchema))
+	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_OpportunityPartners (OpportunityGUID, PartnerGUID, PartnerFunction, IsPrimary) VALUES (@p1, @p2, @p3, @p4)", dbSchema))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -171,49 +228,81 @@ func generateAndInsertOpportunityPartners(db *sql.DB, opportunities, partners []
 }
 
 func generateAndInsertCases(db *sql.DB, num int, partners, opportunities []uuid.UUID) {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(fmt.Sprintf("INSERT INTO %s.tbl_Cases (CaseGUID, CaseType, Status, Summary, AssignedTo, CreatedDate, ClosedDate, PartnerGUID, OpportunityGUID) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", dbSchema))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stmt.Close()
+	const batchSize = 200 // Process in batches of 200 records
 
 	caseTypes := []string{"Payment Inquiry", "Complaint", "Document Request"}
 	statuses := []string{"Open", "Resolved"}
 	assignedTos := []string{"Susan Miller", "John Davis", "Lisa White"}
 
-	for i := 0; i < num; i++ {
-		guid := uuid.New()
-		caseType := caseTypes[rand.Intn(len(caseTypes))]
-		status := statuses[rand.Intn(len(statuses))]
-		summary := fmt.Sprintf("Generated summary for %s.", caseType)
-		assignedTo := assignedTos[rand.Intn(len(assignedTos))]
-		createdDate := time.Now().Add(-time.Duration(rand.Intn(365)) * 24 * time.Hour)
-		var closedDate sql.NullTime
-		if status == "Resolved" {
-			closedDate.Time = createdDate.Add(time.Duration(rand.Intn(15)) * 24 * time.Hour)
-			closedDate.Valid = true
+	for batchStart := 0; batchStart < num; batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > num {
+			batchEnd = num
+		}
+		currentBatchSize := batchEnd - batchStart
+
+		log.Printf("Processing batch %d-%d (%d records)", batchStart+1, batchEnd, currentBatchSize)
+
+		tx, err := db.Begin()
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer tx.Rollback()
+
+		// Build the batch INSERT statement with multiple value sets
+		baseQuery := fmt.Sprintf("INSERT INTO %s.tbl_Cases (CaseGUID, CaseType, Status, Summary, AssignedTo, CreatedDate, ClosedDate, PartnerGUID, OpportunityGUID) VALUES ", dbSchema)
+
+		var valueStrings []string
+		var args []interface{}
+
+		for i := 0; i < currentBatchSize; i++ {
+			guid := uuid.New()
+			caseType := caseTypes[rand.Intn(len(caseTypes))]
+			status := statuses[rand.Intn(len(statuses))]
+			summary := fmt.Sprintf("Generated summary for %s.", caseType)
+			assignedTo := assignedTos[rand.Intn(len(assignedTos))]
+			createdDate := time.Now().Add(-time.Duration(rand.Intn(365)) * 24 * time.Hour)
+			var closedDate sql.NullTime
+			if status == "Resolved" {
+				closedDate.Time = createdDate.Add(time.Duration(rand.Intn(15)) * 24 * time.Hour)
+				closedDate.Valid = true
+			}
+
+			// Link case to an existing partner
+			partnerGUID := partners[rand.Intn(len(partners))]
+
+			// Link case to an existing opportunity (~60% chance)
+			var opportunityGUID interface{}
+			if rand.Float64() < 0.6 {
+				opportunityGUID = opportunities[rand.Intn(len(opportunities))]
+			} else {
+				opportunityGUID = nil
+			}
+
+			// Add to batch
+			paramOffset := i * 9
+			valueStrings = append(valueStrings, fmt.Sprintf("(@p%d, @p%d, @p%d, @p%d, @p%d, @p%d, @p%d, @p%d, @p%d)",
+				paramOffset+1, paramOffset+2, paramOffset+3, paramOffset+4, paramOffset+5,
+				paramOffset+6, paramOffset+7, paramOffset+8, paramOffset+9))
+
+			args = append(args, guid, caseType, status, summary, assignedTo, createdDate, closedDate, partnerGUID, opportunityGUID)
 		}
 
-		// Link case to an existing partner
-		partnerGUID := partners[rand.Intn(len(partners))]
-
-		// Link case to an existing opportunity (~60% chance)
-		var opportunityGUID sql.Null[uuid.UUID]
-		if rand.Float64() < 0.6 {
-			opportunityGUID.V = opportunities[rand.Intn(len(opportunities))]
-			opportunityGUID.Valid = true
+		// Execute the batch insert
+		batchQuery := baseQuery + valueStrings[0]
+		for i := 1; i < len(valueStrings); i++ {
+			batchQuery += ", " + valueStrings[i]
 		}
 
-		_, err = stmt.Exec(guid, caseType, status, summary, assignedTo, createdDate, closedDate, partnerGUID, opportunityGUID)
+		_, err = tx.Exec(batchQuery, args...)
+		if err != nil {
+			log.Printf("Error executing batch insert: %v", err)
+			log.Fatal(err)
+		}
+
+		err = tx.Commit()
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
-	tx.Commit()
 }
