@@ -1,0 +1,6 @@
+mappings:
+  - namespace: DummyTable
+    mapnamespace: rbc.applicants1
+    add: ["_id"]
+    cel:
+      _id: bson_uuid(base64.decode(doc.PartnerGUID))

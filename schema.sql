@@ -53,3 +53,12 @@ CREATE TABLE tbl_Cases (
     CONSTRAINT FK_Cases_Opportunity FOREIGN KEY (OpportunityGUID) REFERENCES tbl_Opportunities(OpportunityGUID)
 );
 GO
+-- Create indexes to support the query
+CREATE INDEX IX_OpportunityPartners_PartnerGUID ON tbl_OpportunityPartners (PartnerGUID);
+GO
+
+CREATE INDEX IX_Cases_PartnerGUID ON tbl_Cases (PartnerGUID);
+GO
+
+CREATE INDEX IX_OpportunityPartners_OpportunityGUID ON tbl_OpportunityPartners (OpportunityGUID);
+GO

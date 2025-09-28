@@ -1,0 +1,46 @@
+driver: sqlserver
+connectionstring: sqlserver://sa:YourStrong!Passw0rd@mssql-service.default.svc.cluster.local?database=LoanCRM
+placeholder: '@p'
+mappings:
+  - namespace: DummyTable
+    partitionquery: "with nums as (select top 10 1 n from sys.all_objects) select newid() as PartnerGUID from nums order by PartnerGUID"
+    query: "SELECT TOP 1001
+    p.PartnerGUID,
+    p.FirstName,
+    p.LastName,
+    p.Email,
+    p.PhoneNumber,
+    (
+        SELECT 
+            o.OpportunityGUID,
+            o.ProcessType,
+            o.Status,
+            o.Description,
+            o.RequestedAmount,
+            o.CreatedDate,
+            o.ClosingDate,
+            op.PartnerFunction,
+            op.IsPrimary
+        FROM tbl_OpportunityPartners op
+        INNER JOIN tbl_Opportunities o
+            ON op.OpportunityGUID = o.OpportunityGUID
+        WHERE op.PartnerGUID = p.PartnerGUID
+        FOR JSON PATH
+    ) AS Opportunities,
+    (
+        SELECT 
+            c.CaseGUID,
+            c.CaseType,
+            c.Status,
+            c.Summary,
+            c.AssignedTo,
+            c.CreatedDate,
+            c.ClosedDate,
+            c.OpportunityGUID
+        FROM tbl_Cases c
+        WHERE c.PartnerGUID = p.PartnerGUID
+        FOR JSON PATH
+    ) AS Cases
+FROM tbl_BusinessPartners p where %v"
+    limit: 1000
+    decodejson: ["Opportunities", "Cases"]
